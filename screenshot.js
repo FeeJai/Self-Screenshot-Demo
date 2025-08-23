@@ -129,25 +129,34 @@ class ScreenshotCapture {
             this.updateStatus('📸 Taking screenshot...', 'info');
             this.screenshotButton.classList.add('pulse');
             
-
-            
-            // Use ImageCapture API for reliable screenshot capture
+            let canvas, ctx, blob;
             const track = this.mediaStream.getVideoTracks()[0];
-            if (!('ImageCapture' in window) || !track) {
-                throw new Error('ImageCapture API not supported or no video track available');
+            
+            if (!track) {
+                throw new Error('No video track available');
             }
 
-            const imageCapture = new ImageCapture(track);
-            const bitmap = await imageCapture.grabFrame();
-            
-            const canvas = document.createElement('canvas');
-            const ctx = canvas.getContext('2d');
-            canvas.width = bitmap.width;
-            canvas.height = bitmap.height;
-            ctx.drawImage(bitmap, 0, 0);
-            
-            // Convert to blob
-            const blob = await this.canvasToBlob(canvas);
+            // Try ImageCapture API first (Chrome, Edge)
+            if ('ImageCapture' in window) {
+                try {
+                    const imageCapture = new ImageCapture(track);
+                    const bitmap = await imageCapture.grabFrame();
+                    
+                    canvas = document.createElement('canvas');
+                    ctx = canvas.getContext('2d');
+                    canvas.width = bitmap.width;
+                    canvas.height = bitmap.height;
+                    ctx.drawImage(bitmap, 0, 0);
+                    
+                    blob = await this.canvasToBlob(canvas);
+                } catch (imageCaptureError) {
+                    console.log('ImageCapture failed, falling back to video capture:', imageCaptureError);
+                    blob = await this.captureFromVideo();
+                }
+            } else {
+                // Fallback for Safari and Firefox
+                blob = await this.captureFromVideo();
+            }
             
             // Create download and preview
             this.handleScreenshotCapture(blob);
@@ -160,6 +169,46 @@ class ScreenshotCapture {
             console.error('Screenshot capture error:', error);
             this.updateStatus('❌ Failed to capture screenshot: ' + error.message, 'error');
         }
+    }
+
+    async captureFromVideo() {
+        // Fallback method using video element - works in Safari and Firefox
+        return new Promise((resolve, reject) => {
+            try {
+                // Ensure video is playing
+                if (this.videoElement.paused) {
+                    this.videoElement.play();
+                }
+                
+                // Wait for next frame to ensure fresh content
+                requestAnimationFrame(() => {
+                    try {
+                        const canvas = document.createElement('canvas');
+                        const ctx = canvas.getContext('2d');
+                        
+                        // Set canvas size to match video dimensions
+                        canvas.width = this.videoElement.videoWidth || 1920;
+                        canvas.height = this.videoElement.videoHeight || 1080;
+                        
+                        // Draw the current video frame to canvas
+                        ctx.drawImage(this.videoElement, 0, 0, canvas.width, canvas.height);
+                        
+                        // Convert to blob
+                        canvas.toBlob((blob) => {
+                            if (blob) {
+                                resolve(blob);
+                            } else {
+                                reject(new Error('Failed to create blob from canvas'));
+                            }
+                        }, 'image/jpeg', 0.92);
+                    } catch (canvasError) {
+                        reject(new Error('Canvas capture failed: ' + canvasError.message));
+                    }
+                });
+            } catch (videoError) {
+                reject(new Error('Video capture setup failed: ' + videoError.message));
+            }
+        });
     }
 
 
@@ -326,14 +375,46 @@ document.addEventListener('DOMContentLoaded', () => {
         return;
     }
     
+    // Check capture method support and provide browser info
+    const browserInfo = getBrowserInfo();
+    console.log(`Screenshot capture initialized on ${browserInfo.name}!`);
+    
+    if (browserInfo.supportsImageCapture) {
+        console.log('✅ Using ImageCapture API for high-quality screenshots');
+    } else {
+        console.log('⚠️ Using video canvas fallback (ImageCapture not available)');
+    }
+    
     // Create the screenshot capture instance
     new ScreenshotCapture();
     
-    console.log('Screenshot capture initialized successfully!');
     console.log('Keyboard shortcuts:');
     console.log('  Ctrl/Cmd+S: Take screenshot (when capturing)');
     console.log('  Ctrl/Cmd+Q: Stop capture');
 });
+
+function getBrowserInfo() {
+    const userAgent = navigator.userAgent;
+    let browserName = 'Unknown Browser';
+    let supportsImageCapture = 'ImageCapture' in window;
+    
+    if (userAgent.includes('Chrome') && !userAgent.includes('Edg')) {
+        browserName = 'Chrome';
+    } else if (userAgent.includes('Firefox')) {
+        browserName = 'Firefox';
+        supportsImageCapture = false; // Firefox has limited ImageCapture support
+    } else if (userAgent.includes('Safari') && !userAgent.includes('Chrome')) {
+        browserName = 'Safari';
+        supportsImageCapture = false; // Safari doesn't support ImageCapture
+    } else if (userAgent.includes('Edg')) {
+        browserName = 'Edge';
+    }
+    
+    return {
+        name: browserName,
+        supportsImageCapture: supportsImageCapture
+    };
+}
 
 // Export for potential external use
 if (typeof module !== 'undefined' && module.exports) {
