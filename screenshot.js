@@ -4,6 +4,8 @@ class ScreenshotCapture {
         this.videoElement = null;
         this.isCapturing = false;
         this.screenshotCount = 0;
+        this.captureStartTime = null;
+        this.timerInterval = null;
         
         // Bind methods to preserve context
         this.startCapture = this.startCapture.bind(this);
@@ -19,6 +21,9 @@ class ScreenshotCapture {
         this.screenshotButton = document.getElementById('takeScreenshot');
         this.stopButton = document.getElementById('stopCapture');
         this.statusElement = document.getElementById('status');
+        this.timingInfoElement = document.getElementById('timing-info');
+        this.totalCaptureTimeElement = document.getElementById('total-capture-time');
+        this.lastScreenshotTimeElement = document.getElementById('last-screenshot-time');
         this.screenshotsContainer = document.getElementById('screenshots');
         
         // Create hidden video element for capture
@@ -96,6 +101,7 @@ class ScreenshotCapture {
             this.isCapturing = true;
             this.updateButtonStates();
             this.startButton.classList.remove('pulse');
+            this.startTimer(); // Start the capture timer
             this.updateStatus('✅ Screen capture ready! Click "Take Screenshot" or press Ctrl/Cmd+S', 'ready');
             
             // Add visual feedback
@@ -116,54 +122,29 @@ class ScreenshotCapture {
         }
 
         try {
+            // Capture current timer value BEFORE starting screenshot process
+            const currentTimerValue = this.getCurrentTimerValue();
+            this.updateTimingInfo(currentTimerValue);
+            
             this.updateStatus('📸 Taking screenshot...', 'info');
             this.screenshotButton.classList.add('pulse');
             
-            // Debug video element state
-            console.log('Video element dimensions:', this.videoElement.videoWidth, 'x', this.videoElement.videoHeight);
-            console.log('Video element ready state:', this.videoElement.readyState);
-            console.log('Video element current time:', this.videoElement.currentTime);
+
             
-            // Ensure video has content
-            if (this.videoElement.videoWidth === 0 || this.videoElement.videoHeight === 0) {
-                throw new Error('Video stream has no dimensions - may be blocked by browser security');
+            // Use ImageCapture API for reliable screenshot capture
+            const track = this.mediaStream.getVideoTracks()[0];
+            if (!('ImageCapture' in window) || !track) {
+                throw new Error('ImageCapture API not supported or no video track available');
             }
+
+            const imageCapture = new ImageCapture(track);
+            const bitmap = await imageCapture.grabFrame();
             
-            // Wait a moment to ensure video is playing
-            await this.ensureVideoPlaying();
-            
-            // Create canvas from video stream
             const canvas = document.createElement('canvas');
             const ctx = canvas.getContext('2d');
-            
-            // Set canvas dimensions to match video
-            canvas.width = this.videoElement.videoWidth;
-            canvas.height = this.videoElement.videoHeight;
-            
-            // Fill canvas with white background first (helps debug black issues)
-            ctx.fillStyle = '#ffffff';
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
-            
-            // Draw current video frame to canvas
-            ctx.drawImage(this.videoElement, 0, 0);
-            
-            // Debug: Check if canvas has content
-            const imageData = ctx.getImageData(0, 0, Math.min(100, canvas.width), Math.min(100, canvas.height));
-            const hasContent = this.checkCanvasContent(imageData);
-            console.log('Canvas has non-black content:', hasContent);
-            
-            if (!hasContent) {
-                // Try alternative approach: capture from ImageCapture API if available
-                const altCanvas = await this.tryImageCaptureAPI();
-                if (altCanvas) {
-                    this.handleScreenshotCapture(await this.canvasToBlob(altCanvas));
-                    this.screenshotButton.classList.remove('pulse');
-                    this.updateStatus('✅ Screenshot captured using fallback method!', 'ready');
-                    return;
-                }
-                
-                this.updateStatus('⚠️ Screenshot may be black due to browser security restrictions. Try selecting a different window/screen.', 'error');
-            }
+            canvas.width = bitmap.width;
+            canvas.height = bitmap.height;
+            ctx.drawImage(bitmap, 0, 0);
             
             // Convert to blob
             const blob = await this.canvasToBlob(canvas);
@@ -181,65 +162,68 @@ class ScreenshotCapture {
         }
     }
 
-    async ensureVideoPlaying() {
-        return new Promise((resolve) => {
-            if (this.videoElement.readyState >= 2 && this.videoElement.currentTime > 0) {
-                resolve();
-            } else {
-                const checkPlaying = () => {
-                    if (this.videoElement.readyState >= 2) {
-                        this.videoElement.removeEventListener('timeupdate', checkPlaying);
-                        resolve();
-                    }
-                };
-                this.videoElement.addEventListener('timeupdate', checkPlaying);
-                // Fallback timeout
-                setTimeout(resolve, 500);
-            }
-        });
-    }
 
-    checkCanvasContent(imageData) {
-        // Check if canvas has content other than black pixels
-        const data = imageData.data;
-        for (let i = 0; i < data.length; i += 4) {
-            const r = data[i];
-            const g = data[i + 1];
-            const b = data[i + 2];
-            // If we find any pixel that's not black (or very dark), we have content
-            if (r > 10 || g > 10 || b > 10) {
-                return true;
-            }
-        }
-        return false;
-    }
 
-    async tryImageCaptureAPI() {
-        try {
-            // Try using ImageCapture API as fallback
-            const track = this.mediaStream.getVideoTracks()[0];
-            if ('ImageCapture' in window && track) {
-                const imageCapture = new ImageCapture(track);
-                const bitmap = await imageCapture.grabFrame();
-                
-                const canvas = document.createElement('canvas');
-                const ctx = canvas.getContext('2d');
-                canvas.width = bitmap.width;
-                canvas.height = bitmap.height;
-                ctx.drawImage(bitmap, 0, 0);
-                
-                return canvas;
-            }
-        } catch (error) {
-            console.log('ImageCapture API fallback failed:', error);
-        }
-        return null;
-    }
+
+
+
 
     async canvasToBlob(canvas) {
         return new Promise((resolve) => {
-            canvas.toBlob(resolve, 'image/png', 1.0);
+            canvas.toBlob(resolve, 'image/jpeg', 0.92);
         });
+    }
+
+    startTimer() {
+        this.captureStartTime = Date.now();
+        this.timingInfoElement.classList.add('active');
+        
+        // Update timer every 100ms for smooth decimal display
+        this.timerInterval = setInterval(() => {
+            this.updateTimer();
+        }, 100);
+    }
+
+    stopTimer() {
+        if (this.timerInterval) {
+            clearInterval(this.timerInterval);
+            this.timerInterval = null;
+        }
+        this.timingInfoElement.classList.remove('active');
+        
+        // Reset timing display values
+        this.totalCaptureTimeElement.textContent = '--:--.-';
+        this.lastScreenshotTimeElement.textContent = '--:--.-';
+        
+        this.captureStartTime = null;
+    }
+
+    updateTimer() {
+        if (!this.captureStartTime) return;
+        
+        const elapsed = (Date.now() - this.captureStartTime) / 1000;
+        const minutes = Math.floor(elapsed / 60);
+        const seconds = elapsed % 60;
+        
+        // Format as MM:SS.S
+        const formattedTime = `${minutes.toString().padStart(2, '0')}:${seconds.toFixed(1).padStart(4, '0')}`;
+        this.totalCaptureTimeElement.textContent = formattedTime;
+    }
+
+    getCurrentTimerValue() {
+        if (!this.captureStartTime) return '--:--.-';
+        
+        const elapsed = (Date.now() - this.captureStartTime) / 1000;
+        const minutes = Math.floor(elapsed / 60);
+        const seconds = elapsed % 60;
+        
+        // Format as MM:SS.S
+        return `${minutes.toString().padStart(2, '0')}:${seconds.toFixed(1).padStart(4, '0')}`;
+    }
+
+    updateTimingInfo(timerValue) {
+        // Only update the "Time Of Last Screenshot" value - the main timer continues running in totalCaptureTimeElement
+        this.lastScreenshotTimeElement.textContent = timerValue;
     }
 
     handleScreenshotCapture(blob) {
@@ -291,6 +275,7 @@ class ScreenshotCapture {
         }
         
         this.isCapturing = false;
+        this.stopTimer(); // Stop the capture timer
         this.updateButtonStates();
         this.updateStatus('⏹️ Screen capture stopped.', 'info');
     }
@@ -298,12 +283,14 @@ class ScreenshotCapture {
     handleStreamEnded() {
         // This is called when user stops sharing via browser UI
         this.isCapturing = false;
+        this.stopTimer(); // Stop the capture timer
         this.updateButtonStates();
         this.updateStatus('⏹️ Screen sharing ended by user.', 'info');
     }
 
     handleCaptureError(error) {
         this.startButton.classList.remove('pulse');
+        this.stopTimer(); // Stop timer on error
         console.error('Screen capture error:', error);
         
         let message = '❌ Failed to start screen capture: ';
