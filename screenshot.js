@@ -6,6 +6,8 @@ class ScreenshotCapture {
         this.screenshotCount = 0;
         this.captureStartTime = null;
         this.timerInterval = null;
+        this.delayTimeout = null;
+        this.countdownInterval = null;
         
         // Bind methods to preserve context
         this.startCapture = this.startCapture.bind(this);
@@ -25,6 +27,7 @@ class ScreenshotCapture {
         this.totalCaptureTimeElement = document.getElementById('total-capture-time');
         this.lastScreenshotTimeElement = document.getElementById('last-screenshot-time');
         this.screenshotsContainer = document.getElementById('screenshots');
+        this.delayInput = document.getElementById('delayInput');
         
         // Create hidden video element for capture
         this.videoElement = document.createElement('video');
@@ -56,6 +59,10 @@ class ScreenshotCapture {
                         }
                         break;
                 }
+            } else if (e.key === 'Escape' && this.delayTimeout) {
+                // Cancel screenshot delay with Escape key
+                e.preventDefault();
+                this.cancelScreenshotDelay();
             }
         });
     }
@@ -67,8 +74,9 @@ class ScreenshotCapture {
 
     updateButtonStates() {
         this.startButton.disabled = this.isCapturing;
-        this.screenshotButton.disabled = !this.isCapturing;
+        this.screenshotButton.disabled = !this.isCapturing || this.delayTimeout !== null;
         this.stopButton.disabled = !this.isCapturing;
+        this.delayInput.disabled = this.isCapturing && this.delayTimeout !== null;
     }
 
     async startCapture() {
@@ -77,13 +85,22 @@ class ScreenshotCapture {
             this.startButton.classList.add('pulse');
             
             // Request screen capture with optimal settings
-            // Note: Removed preferCurrentTab as it can cause black screenshots due to browser security
-            this.mediaStream = await navigator.mediaDevices.getDisplayMedia({
-                video: { frameRate: 1 },
-                preferCurrentTab: true,
-
+            // Note: preferCurrentTab only works in Chromium browsers
+            const constraints = {
+                video: {
+                    displaySurface: "browser",
+                    frameRate: 5,
+                  },
                 audio: false // We don't need audio for screenshots
-            });
+            };
+            
+            // Only add preferCurrentTab for Chromium browsers
+            const browserInfo = getBrowserInfo();
+            if (browserInfo.name === 'Chrome' || browserInfo.name === 'Edge') {
+                constraints.preferCurrentTab = true;
+            }
+            
+            this.mediaStream = await navigator.mediaDevices.getDisplayMedia(constraints);
 
             // Set up the video element with the stream
             this.videoElement.srcObject = this.mediaStream;
@@ -102,7 +119,12 @@ class ScreenshotCapture {
             this.updateButtonStates();
             this.startButton.classList.remove('pulse');
             this.startTimer(); // Start the capture timer
-            this.updateStatus('✅ Screen capture ready! Click "Take Screenshot" or press Ctrl/Cmd+S', 'ready');
+            // Provide browser-specific guidance
+            let readyMessage = '✅ Screen capture ready! Click "Take Screenshot" or press Ctrl/Cmd+S';
+            if (browserInfo.name === 'Firefox' || browserInfo.name === 'Safari') {
+                readyMessage += ` (${browserInfo.name} - using video canvas method)`;
+            }
+            this.updateStatus(readyMessage, 'ready');
             
             // Add visual feedback
             this.screenshotButton.classList.add('pulse');
@@ -121,13 +143,79 @@ class ScreenshotCapture {
             return;
         }
 
+        // Get delay value from input
+        const delaySeconds = parseFloat(this.delayInput.value) || 0;
+        
+        if (delaySeconds > 0) {
+            // Start countdown delay
+            this.startScreenshotDelay(delaySeconds);
+        } else {
+            // Take screenshot immediately
+            this.captureScreenshotNow();
+        }
+    }
+
+    startScreenshotDelay(delaySeconds) {
+        this.updateButtonStates(); // Disable screenshot button during delay
+        this.screenshotButton.classList.add('pulse');
+        
+        let remainingTime = delaySeconds;
+        
+        // Update status immediately
+        this.updateStatus(`⏱️ Taking screenshot in ${remainingTime.toFixed(1)} seconds...`, 'info');
+        
+        // Start countdown interval
+        this.countdownInterval = setInterval(() => {
+            remainingTime -= 0.1;
+            
+            if (remainingTime <= 0) {
+                // Clear interval and take screenshot
+                clearInterval(this.countdownInterval);
+                this.countdownInterval = null;
+                this.delayTimeout = null;
+                this.updateButtonStates();
+                this.captureScreenshotNow();
+            } else {
+                // Update countdown display
+                this.updateStatus(`⏱️ Taking screenshot in ${remainingTime.toFixed(1)} seconds...`, 'info');
+            }
+        }, 100);
+        
+        // Set main timeout for screenshot
+        this.delayTimeout = setTimeout(() => {
+            if (this.countdownInterval) {
+                clearInterval(this.countdownInterval);
+                this.countdownInterval = null;
+            }
+            this.delayTimeout = null;
+            this.updateButtonStates();
+            this.captureScreenshotNow();
+        }, delaySeconds * 1000);
+    }
+
+    cancelScreenshotDelay() {
+        if (this.delayTimeout) {
+            clearTimeout(this.delayTimeout);
+            this.delayTimeout = null;
+        }
+        
+        if (this.countdownInterval) {
+            clearInterval(this.countdownInterval);
+            this.countdownInterval = null;
+        }
+        
+        this.screenshotButton.classList.remove('pulse');
+        this.updateButtonStates();
+        this.updateStatus('⏹️ Screenshot delay cancelled.', 'info');
+    }
+
+    async captureScreenshotNow() {
         try {
             // Capture current timer value BEFORE starting screenshot process
             const currentTimerValue = this.getCurrentTimerValue();
             this.updateTimingInfo(currentTimerValue);
             
             this.updateStatus('📸 Taking screenshot...', 'info');
-            this.screenshotButton.classList.add('pulse');
             
             let canvas, ctx, blob;
             const track = this.mediaStream.getVideoTracks()[0];
@@ -314,6 +402,9 @@ class ScreenshotCapture {
     }
 
     stopCapture() {
+        // Cancel any pending screenshot delay
+        this.cancelScreenshotDelay();
+        
         if (this.mediaStream) {
             this.mediaStream.getTracks().forEach(track => track.stop());
             this.mediaStream = null;
@@ -331,6 +422,9 @@ class ScreenshotCapture {
 
     handleStreamEnded() {
         // This is called when user stops sharing via browser UI
+        // Cancel any pending screenshot delay
+        this.cancelScreenshotDelay();
+        
         this.isCapturing = false;
         this.stopTimer(); // Stop the capture timer
         this.updateButtonStates();
@@ -381,8 +475,10 @@ document.addEventListener('DOMContentLoaded', () => {
     
     if (browserInfo.supportsImageCapture) {
         console.log('✅ Using ImageCapture API for high-quality screenshots');
+        console.log('✅ preferCurrentTab option available (Chromium)');
     } else {
         console.log('⚠️ Using video canvas fallback (ImageCapture not available)');
+        console.log('ℹ️ Screen sharing picker will show all available sources');
     }
     
     // Create the screenshot capture instance
@@ -391,6 +487,7 @@ document.addEventListener('DOMContentLoaded', () => {
     console.log('Keyboard shortcuts:');
     console.log('  Ctrl/Cmd+S: Take screenshot (when capturing)');
     console.log('  Ctrl/Cmd+Q: Stop capture');
+    console.log('  Escape: Cancel screenshot delay countdown');
 });
 
 function getBrowserInfo() {
